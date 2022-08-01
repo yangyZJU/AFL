@@ -308,7 +308,13 @@ static void edit_params(u32 argc, char** argv) {
 /* Main entry point */
 
 int main(int argc, char** argv) {
-
+  /* isatty:
+      检查给定的设备类型
+      如果文件为终端机则返回1, 否则返回0.
+  getenv:
+      该函数返回一个以 null 结尾的字符串，该字符串为被请求环境变量的值。
+      如果该环境变量不存在，则返回 NULL。
+  */
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
     SAYF(cCYA "afl-cc " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
@@ -333,11 +339,11 @@ int main(int argc, char** argv) {
 
   }
 
-  find_as(argv[0]);
+  find_as(argv[0]); // 用来寻找as的位置，即查找汇编器位置。
 
-  edit_params(argc, argv);
+  edit_params(argc, argv); // 通过我们传入编译的参数来进行参数处理，将确定好的参数放入 cc_params[] 数组。
 
-  execvp(cc_params[0], (char**)cc_params);
+  execvp(cc_params[0], (char**)cc_params); // 调用execvp(cc_params[0], (char **) cc_params) 执行afl-gcc
 
   FATAL("Oops, failed to execute '%s' - check your PATH", cc_params[0]);
 
