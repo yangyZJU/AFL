@@ -59,7 +59,19 @@ static u8   be_quiet,               /* Quiet mode                        */
 
 
 /* Try to find our "fake" GNU assembler in AFL_PATH or at the location derived
-   from argv[0]. If that fails, abort. */
+   from argv[0]. If that fails, abort. 
+    简而言之：向数组中添加编译选项
+    这个函数是想通过argv[0]（也就是当前文件的路径）来去寻找对应的汇编器as（Linux上as是很常用的一个汇编器，
+    负责把生成的汇编代码翻译到二进制）。
+
+    首先获取环境中的 AFL_PATH 变量。如果获取成功，接着通过 alloc_printf 来动态的分配一段空间存储对应的路径。
+    之后检查这段路径是否可访问，如果可访问的话赋值给 as_path ，然后free，return。不可访问的话直接free掉。
+
+    如果没有读取成功 AFL_PATH 则通过对argv[0]的匹配，提取当前路径 dir，然后将 {dir}/afl-as 在可访问情况下赋值给 as_path ，
+    然后free，return。不可访问的话直接free掉。
+
+    如果以上两种情况因为种种原因都没有成功，那么直接找as，找到了且可访问赋值，没找到就通过 FATAL输出错误信息然后exit(1)
+*/
 
 static void find_as(u8* argv0) {
 
@@ -114,6 +126,10 @@ static void find_as(u8* argv0) {
 
 
 /* Copy argv to cc_params, making the necessary edits. */
+/*
+  首先给 cc_params 分配空间。接下来通过找到最后一个 / 取出此时对应的什么编译器（比如afl-gcc）。
+  将这个名字赋值给 name 
+*/
 
 static void edit_params(u32 argc, char** argv) {
 
@@ -128,7 +144,7 @@ static void edit_params(u32 argc, char** argv) {
 
   name = strrchr(argv[0], '/');
   if (!name) name = argv[0]; else name++;
-
+  // 比较前9个字符是否是afl-clang开头的
   if (!strncmp(name, "afl-clang", 9)) {
 
     clang_mode = 1;
@@ -184,10 +200,10 @@ static void edit_params(u32 argc, char** argv) {
 #endif /* __APPLE__ */
 
   }
-
+  // while循环进入参数扫描
   while (--argc) {
     u8* cur = *(++argv);
-
+    // 如果扫描到-B， -B 选项用于设置编译器的搜索路径
     if (!strncmp(cur, "-B", 2)) {
 
       if (!be_quiet) WARNF("-B is already set, overriding");
@@ -206,8 +222,8 @@ static void edit_params(u32 argc, char** argv) {
 #endif
 
     if (!strcmp(cur, "-fsanitize=address") ||
-        !strcmp(cur, "-fsanitize=memory")) asan_set = 1;
-
+        !strcmp(cur, "-fsanitize=memory")) asan_set = 1; // gcc检查内存访问的错误
+    // FORTIFY_SOURCE在使用各种字符串和内存操作功能时执行一些轻量级检查，以检测一些缓冲区溢出错误。比如strcpy这种。
     if (strstr(cur, "FORTIFY_SOURCE")) fortify_set = 1;
 
     cc_params[cc_par_cnt++] = cur;
