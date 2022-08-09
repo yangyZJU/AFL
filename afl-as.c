@@ -59,7 +59,7 @@
 static u8** as_params;          /* Parameters passed to the real 'as'   */
 
 static u8*  input_file;         /* Originally specified input file      */
-static u8*  modified_file;      /* Instrumented file for the real 'as'  */
+static u8*  modified_file;      /* Instrumented file for the real 'as'  as”进行插桩处理的文件*/
 
 static u8   be_quiet,           /* Quiet mode (no stderr output)        */
             clang_mode,         /* Running in clang mode?               */
@@ -67,8 +67,8 @@ static u8   be_quiet,           /* Quiet mode (no stderr output)        */
             just_version,       /* Just show version?                   */
             sanitizer;          /* Using ASAN / MSAN                    */
 
-static u32  inst_ratio = 100,   /* Instrumentation probability (%)      */
-            as_par_cnt = 1;     /* Number of params to 'as'             */
+static u32  inst_ratio = 100,   /* Instrumentation probability (%)    插桩覆盖率   */
+            as_par_cnt = 1;     /* Number of params to 'as'        传递给as的参数数量初始值     */
 
 /* If we don't find --32 or --64 in the command line, default to 
    instrumentation for whichever mode we were compiled with. This is not
@@ -257,7 +257,7 @@ static void add_instrumentation(void) {
 
   if (!outf) PFATAL("fdopen() failed");  
 
-  while (fgets(line, MAX_LINE, inf)) {
+  while (fgets(line, MAX_LINE, inf)) { //循环读取inf指向的文件的每一行到line数组，每行最多MAX_LINE（8192）个字节，含末尾“\0”
 
     /* In some cases, we want to defer writing the instrumentation trampoline
        until after all the labels, macros, comments, etc. If we're in this
@@ -507,11 +507,11 @@ int main(int argc, char** argv) {
 
   }
 
-  gettimeofday(&tv, &tz);
+  gettimeofday(&tv, &tz); // 获取时区和时间
 
   rand_seed = tv.tv_sec ^ tv.tv_usec ^ getpid();
 
-  srandom(rand_seed);
+  srandom(rand_seed); // 设置随机种子
 
   edit_params(argc, argv);
 
@@ -532,14 +532,20 @@ int main(int argc, char** argv) {
      that... */
 
   if (getenv("AFL_USE_ASAN") || getenv("AFL_USE_MSAN")) {
+    //将inst_ratio除3。这是因为在进行ASAN的编译时，AFL无法识别出ASAN特定的分支，导致插入很多无意义的桩代码，所以直接暴力地将插桩概率/3；
     sanitizer = 1;
-    inst_ratio /= 3;
+    inst_ratio /= 3; // 直接除以3是否合理？
   }
 
-  if (!just_version) add_instrumentation();
-
+  if (!just_version) add_instrumentation(); // add_instrumentation插桩函数
+  /*
+  fork 一个子进程来执行 execvp(as_params[0], (char**)as_params);。
+  这里采用的是 fork 一个子进程的方式来执行插桩。这其实是因为我们的 execvp 执行的时候，
+  会用 as_params[0] 来完全替换掉当前进程空间中的程序，如果不通过子进程来执行实际的 as，
+  那么后续就无法在执行完实际的as之后，还能unlink掉modified_file
+  */
   if (!(pid = fork())) {
-
+    // fork一个子进程来执行as_params[0]
     execvp(as_params[0], (char**)as_params);
     FATAL("Oops, failed to execute '%s' - check your PATH", as_params[0]);
 
@@ -547,10 +553,10 @@ int main(int argc, char** argv) {
 
   if (pid < 0) PFATAL("fork() failed");
 
-  if (waitpid(pid, &status, 0) <= 0) PFATAL("waitpid() failed");
+  if (waitpid(pid, &status, 0) <= 0) PFATAL("waitpid() failed"); //等待子进程结束
 
-  if (!getenv("AFL_KEEP_ASSEMBLY")) unlink(modified_file);
-
+  if (!getenv("AFL_KEEP_ASSEMBLY")) unlink(modified_file); //读取环境变量"AFL_KEEP_ASSEMBLY"失败，则unlink掉modified_file
+  // 设置该环境变量主要是为了防止afl-as删掉插桩后的汇编文件，设置为1会保留插桩后的汇编文件
   exit(WEXITSTATUS(status));
 
 }

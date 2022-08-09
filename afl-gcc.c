@@ -91,15 +91,15 @@ static void find_as(u8* argv0) {
     ck_free(tmp);
 
   }
-
-  slash = strrchr(argv0, '/');
+   // char *strrchr(const char *str, int c) 在参数 str 所指向的字符串中搜索最后一次出现字符 c（一个无符号字符）的位置
+  slash = strrchr(argv0, '/'); // "/afl-gcc"
 
   if (slash) {
 
     u8 *dir;
 
     *slash = 0;
-    dir = ck_strdup(argv0);
+    dir = ck_strdup(argv0); // 使用ck_strdup函数将传入的实例名称存入特定结构的chunk中，并将此chunk的地址写入sync_id。
     *slash = '/';
 
     tmp = alloc_printf("%s/afl-as", dir);
@@ -142,7 +142,7 @@ static void edit_params(u32 argc, char** argv) {
 
   cc_params = ck_alloc((argc + 128) * sizeof(u8*));
 
-  name = strrchr(argv[0], '/');
+  name = strrchr(argv[0], '/'); // name = "/afl-gcc"
   if (!name) name = argv[0]; else name++;
   // 比较前9个字符是否是afl-clang开头的
   if (!strncmp(name, "afl-clang", 9)) {
@@ -358,7 +358,21 @@ int main(int argc, char** argv) {
   find_as(argv[0]); // 用来寻找as的位置，即查找汇编器位置。
 
   edit_params(argc, argv); // 通过我们传入编译的参数来进行参数处理，将确定好的参数放入 cc_params[] 数组。
-
+  /*
+  cc_params[0] = gcc;
+  cc_params[1] = -g;
+  cc_params[2] = -0;
+  cc_params[3] = afl_test; 测试用例的二进制名字
+  cc_params[4] = afl_test.c; 测试用例
+  cc_params[5] = -B;
+  cc_params[6] = /home/fuzz/afl/afl-2.52b; afl位置
+  cc_params[7] = -g;
+  cc_params[8] = -O3;
+  cc_params[9] = -funroll-loops;
+  cc_params[10] = -D__AFL_COMPILER=1;
+  cc_params[11] = -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1;
+  */
+  // 调用execvp 将cc_params中的参数 传到cc_params[0]中执行
   execvp(cc_params[0], (char**)cc_params); // 调用execvp(cc_params[0], (char **) cc_params) 执行afl-gcc
 
   FATAL("Oops, failed to execute '%s' - check your PATH", cc_params[0]);
