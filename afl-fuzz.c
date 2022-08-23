@@ -819,8 +819,8 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
   } else q_prev100 = queue = queue_top = q;
 
-  queued_paths++;
-  pending_not_fuzzed++;
+  queued_paths++; // queue计数器加1
+  pending_not_fuzzed++; // 待fuzz的样例计数器加1
 
   cycles_wo_finds = 0;
 
@@ -1264,25 +1264,30 @@ static void minimize_bits(u8* dst, u8* src) {
    The first step of the process is to maintain a list of top_rated[] entries
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
-
+/*
+  当我们发现一个新路径时，需要判断发现的新路径是否更“favorable”，
+  也就是是否包含最小的路径集合能遍历到所有bitmap中的位，并在之后的fuzz过程中聚焦在这些路径上。
+  以上过程的第一步是为bitmap中的每个字节维护一个 top_rated[] 的列表，这里会计算究竟哪些位置是更“合适”的，该函数主要实现该过程。
+*/
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
-
+  // 首先计算case的fav_factor，计算方法是执行时间和样例大小的乘积
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
 
-  for (i = 0; i < MAP_SIZE; i++)
+  for (i = 0; i < MAP_SIZE; i++) // 遍历trace_bits数组
 
-    if (trace_bits[i]) {
+    if (trace_bits[i]) { // 不为0，表示已经被覆盖到的路径
 
-       if (top_rated[i]) {
+       if (top_rated[i]) { // 检查top_rated是否存在/
 
          /* Faster-executing or smaller test cases are favored. */
 
-         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
-
+         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue; // 判断哪个计算结果更小
+         // 如果top_rated[i]的更小，则代表它的更优，不做处理，继续遍历下一个路径；
+          // 如果q的更小，就执行以下代码：
          /* Looks like we're going to win. Decrease ref count for the
             previous winner, discard its trace_bits[] if necessary. */
 
@@ -1295,10 +1300,10 @@ static void update_bitmap_score(struct queue_entry* q) {
 
        /* Insert ourselves as the new winner. */
 
-       top_rated[i] = q;
+       top_rated[i] = q; // 设置为当前case
        q->tc_ref++;
 
-       if (!q->trace_mini) {
+       if (!q->trace_mini) { // 为空
          q->trace_mini = ck_alloc(MAP_SIZE >> 3);
          minimize_bits(q->trace_mini, trace_bits);
        }
@@ -1315,7 +1320,34 @@ static void update_bitmap_score(struct queue_entry* q) {
    previously-unseen bytes (temp_v) and marks them as favored, at least
    until the next run. The favored entries are given more air time during
    all fuzzing steps. */
+/*
+  在前面讨论的关于case的 top_rated 的计算中，还有一个机制是检查所有的 top_rated[] 条目，
+  然后顺序获取之前没有遇到过的byte的对比分数低的“获胜者”进行标记，标记至少会维持到下一次运行之前。
+  在所有的fuzz步骤中，“favorable”的条目会获得更多的执行时间。
+*/
 
+/*
+  这里根据网上公开的一个例子来理解该过程：
+
+    现假设有如下tuple和seed信息：
+
+    tuple: t0, t1, t2, t3, t4
+
+    seed: s0, s1, s2
+
+    初始化 temp_v = [1,1,1,1,1]
+    s1可覆盖t2, t3，s2覆盖t0, t1, t4，并且top_rated[0] = s2，top_rated[2]=s1
+    将按照如下过程进行筛选和判断：
+
+    首先判断 temp_v[0]=1，说明t0没有被覆盖；
+    top_rated[0] 存在 (s2) -> 判断s2可以覆盖的范围 -> trace_mini = [1,1,0,0,1]；
+    更新 temp_v=[0,0,1,1,0]， 标记s2为 "favored"；
+    继续判断 temp_v[1]=0，说明t1此时已经被覆盖，跳过；
+    继续判断 temp_v[2]=1，说明t2没有被覆盖；
+    top_rated[2] 存在 (s1) -> 判断s1可以覆盖的范围 -> trace_mini=[0,0,1,1,0]；
+    更新 temp_v=[0,0,0,0,0]，标记s1为 "favored"；
+    此时所有tuple都被覆盖，具备"favored'标记的为s1, s2，过程结束。
+*/
 static void cull_queue(void) {
 
   struct queue_entry* q;
@@ -1323,31 +1355,31 @@ static void cull_queue(void) {
   u32 i;
 
   if (dumb_mode || !score_changed) return;
-
+  // 如果处于dumb模式或者score没有发生变化（top_rated没有发生变化），直接返回
   score_changed = 0;
 
   memset(temp_v, 255, MAP_SIZE >> 3);
-
+  // 设置temp_v大小为MAP_SIZE>>3，初始化为0xff，全1，表示还没有被覆盖到，为0表示被覆盖到了。
   queued_favored  = 0;
   pending_favored = 0;
 
   q = queue;
 
-  while (q) {
-    q->favored = 0;
+  while (q) { // 进行队列遍历
+    q->favored = 0; // 所有元素的favored均设置为0
     q = q->next;
   }
 
   /* Let's see if anything in the bitmap isn't captured in temp_v.
      If yes, and if it has a top_rated[] contender, let's use it. */
-
+  // i从0到MAP_SIZE进行迭代，筛选出一组队列条目，它们可以覆盖到所有现在已经覆盖的路径
   for (i = 0; i < MAP_SIZE; i++)
     if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
 
       u32 j = MAP_SIZE >> 3;
 
       /* Remove all bits belonging to the current entry from temp_v. */
-
+      // 从temp_v中，移除所有属于当前current-entry的byte，也就是这个testcase触发了多少path就给tempv标记上
       while (j--) 
         if (top_rated[i]->trace_mini[j])
           temp_v[j] &= ~top_rated[i]->trace_mini[j];
@@ -1361,8 +1393,8 @@ static void cull_queue(void) {
 
   q = queue;
 
-  while (q) {
-    mark_as_redundant(q, !q->favored);
+  while (q) { // 遍历队列，不是favored的case（冗余的测试用例）被标记成redundant_edges
+    mark_as_redundant(q, !q->favored); // 位置在/queue/.state/redundent_edges中
     q = q->next;
   }
 
@@ -2017,7 +2049,16 @@ static void destroy_extras(void) {
    In essence, the instrumentation allows us to skip execve(), and just keep
    cloning a stopped child. So, we just execute once, and then send commands
    through a pipe. The other part of this logic is in afl-as.h. */
+  /*
+    AFL的fork server机制避免了多次执行 execve() 函数的多次调用，只需要调用一次然后通过管道发送命令即可。该函数主要用于启动APP和它的fork server
+    启动目标程序进程后，目标程序会运行一个fork server，
+    fuzzer自身并不负责fork子进程，而是通过管道与fork server通信，由fork server来完成fork以及继续执行目标程序的操作。
 
+    首先，afl-fuzz 会创建两个管道：状态管道和控制管道，然后执行目标程序。
+    此时的目标程序的 main() 函数已经被插桩，程序控制流进入 __afl_maybe_log 中。
+    如果fuzz是第一次执行，则此时的程序就成了fork server们之后的目标程序都由该fork server通过fork生成子进程来运行。
+    fuzz进行过程中，fork server会一直执行fork操作，并将子进程的结束状态通过状态管道传递给 afl-fuzz
+  */
 EXP_ST void init_forkserver(char** argv) {
 
   static struct itimerval it;
@@ -2028,11 +2069,13 @@ EXP_ST void init_forkserver(char** argv) {
   ACTF("Spinning up the fork server...");
 
   if (pipe(st_pipe) || pipe(ctl_pipe)) PFATAL("pipe() failed");
-
+  // 检查 st_pipe 和ctl_pipe，在父子进程间进行管道通信，一个用于传递状态，一个用于传递命令
   forksrv_pid = fork();
-
+  // fork进程出一个子进程
+  // 如果fork成功，则现在有父子两个进程
+  // 此时的父进程为fuzzer，子进程则为目标程序进程，也是将来的fork server
   if (forksrv_pid < 0) PFATAL("fork() failed");
-
+  // 子进程和父进程都会向下执行，通过pid来使父子进程执行不同的代码
   if (!forksrv_pid) {
 
     struct rlimit r;
@@ -2077,12 +2120,12 @@ EXP_ST void init_forkserver(char** argv) {
 
     /* Isolate the process and configure standard descriptors. If out_file is
        specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
-
+    // 创建守护进程
     setsid();
-
+    // 重定向文件描述符1和2到dev_null_fd
     dup2(dev_null_fd, 1);
     dup2(dev_null_fd, 2);
-
+    // 如果指定了out_file，则文件描述符0重定向到dev_null_fd，否则重定向到out_fd
     if (out_file) {
 
       dup2(dev_null_fd, 0);
@@ -2095,7 +2138,7 @@ EXP_ST void init_forkserver(char** argv) {
     }
 
     /* Set up control and status pipes, close the unneeded original fds. */
-
+    // 设置控制和状态管道，关闭不需要的一些文件描述符
     if (dup2(ctl_pipe[0], FORKSRV_FD) < 0) PFATAL("dup2() failed");
     if (dup2(st_pipe[1], FORKSRV_FD + 1) < 0) PFATAL("dup2() failed");
 
@@ -2111,11 +2154,11 @@ EXP_ST void init_forkserver(char** argv) {
 
     /* This should improve performance a bit, since it stops the linker from
        doing extra work post-fork(). */
-
+    // 如果没有设置延迟绑定，则进行设置，不使用缺省模式
     if (!getenv("LD_BIND_LAZY")) setenv("LD_BIND_NOW", "1", 0);
 
     /* Set sane defaults for ASAN if nothing else specified. */
-
+     // 设置环境变量ASAN_OPTIONS，配置ASAN相关
     setenv("ASAN_OPTIONS", "abort_on_error=1:"
                            "detect_leaks=0:"
                            "symbolize=0:"
@@ -2129,12 +2172,17 @@ EXP_ST void init_forkserver(char** argv) {
                            "abort_on_error=1:"
                            "allocator_may_return_null=1:"
                            "msan_track_origins=0", 0);
-
+    /*    带参数执行目标程序，报错才返回 
+          execv()会替换原有进程空间为目标程序，所以后续执行的都是目标程序。
+          第一个目标程序会进入__afl_maybe_log里的__afl_fork_wait_loop，并充当fork server。
+          在整个过程中，每次要fuzz一次目标程序，都会从这个fork server再fork出来一个子进程去fuzz。
+          因此可以看作是三段式：fuzzer -> fork server -> target子进程
+    */
     execv(target_path, argv);
 
     /* Use a distinctive bitmap signature to tell the parent about execv()
        falling through. */
-
+    // 告诉父进程执行失败，结束子进程
     *(u32*)trace_bits = EXEC_FAIL_SIG;
     exit(0);
 
@@ -2145,17 +2193,17 @@ EXP_ST void init_forkserver(char** argv) {
   close(ctl_pipe[0]);
   close(st_pipe[1]);
 
-  fsrv_ctl_fd = ctl_pipe[1];
-  fsrv_st_fd  = st_pipe[0];
+  fsrv_ctl_fd = ctl_pipe[1]; // 父进程只能发送命令
+  fsrv_st_fd  = st_pipe[0]; // 父进程只能读取状态
 
   /* Wait for the fork server to come up, but don't wait too long. */
-
+  // 在一定时间内等待fork server启动
   it.it_value.tv_sec = ((exec_tmout * FORK_WAIT_MULT) / 1000);
   it.it_value.tv_usec = ((exec_tmout * FORK_WAIT_MULT) % 1000) * 1000;
 
   setitimer(ITIMER_REAL, &it, NULL);
 
-  rlen = read(fsrv_st_fd, &status, 4);
+  rlen = read(fsrv_st_fd, &status, 4); // 从管道里读取4字节数据到status
 
   it.it_value.tv_sec = 0;
   it.it_value.tv_usec = 0;
@@ -2165,11 +2213,11 @@ EXP_ST void init_forkserver(char** argv) {
   /* If we have a four-byte "hello" message from the server, we're all set.
      Otherwise, try to figure out what went wrong. */
 
-  if (rlen == 4) {
+  if (rlen == 4) { // 以读取的结果判断fork server是否成功启动
     OKF("All right - fork server is up.");
     return;
   }
-
+  // 子进程启动失败的异常处理相关
   if (child_timed_out)
     FATAL("Timeout while initializing fork server (adjusting -t may help)");
 
@@ -2302,7 +2350,9 @@ EXP_ST void init_forkserver(char** argv) {
 
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
-
+/*
+  该函数主要执行目标应用程序，并进行超时监控，返回状态信息，被调用的程序会更新 trace_bits[]
+*/
 static u8 run_target(char** argv, u32 timeout) {
 
   static struct itimerval it;
@@ -2318,7 +2368,7 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE);
+  memset(trace_bits, 0, MAP_SIZE); // 将trace_bits全部置0，清空共享内存
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2326,9 +2376,9 @@ static u8 run_target(char** argv, u32 timeout) {
      execve(). There is a bit of code duplication between here and 
      init_forkserver(), but c'est la vie. */
 
-  if (dumb_mode == 1 || no_forkserver) {
+  if (dumb_mode == 1 || no_forkserver) { // 如果是dumb_mode模式且没有fork server
 
-    child_pid = fork();
+    child_pid = fork(); // 直接fork出一个子进程
 
     if (child_pid < 0) PFATAL("fork() failed");
 
@@ -2393,12 +2443,12 @@ static u8 run_target(char** argv, u32 timeout) {
                              "symbolize=0:"
                              "msan_track_origins=0", 0);
 
-      execv(target_path, argv);
+      execv(target_path, argv); // 让子进程execv执行目标程序
 
       /* Use a distinctive bitmap value to tell the parent about execv()
          falling through. */
 
-      *(u32*)trace_bits = EXEC_FAIL_SIG;
+      *(u32*)trace_bits = EXEC_FAIL_SIG; // execv执行失败，写入 EXEC_FAIL_SIG
       exit(0);
 
     }
@@ -2409,7 +2459,8 @@ static u8 run_target(char** argv, u32 timeout) {
 
     /* In non-dumb mode, we have the fork server up and running, so simply
        tell it to have at it, and then read back PID. */
-
+    // 如果并不是处在dumb_mode模式，说明fork server已经启动了，我们只需要进行
+    // 控制管道的写和状态管道的读即可
     if ((res = write(fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {
 
       if (stop_soon) return 0;
@@ -2429,7 +2480,7 @@ static u8 run_target(char** argv, u32 timeout) {
   }
 
   /* Configure timeout, as requested by user, then wait for child to terminate. */
-
+  // 配置超时，等待子进程结束
   it.it_value.tv_sec = (timeout / 1000);
   it.it_value.tv_usec = (timeout % 1000) * 1000;
 
@@ -2458,7 +2509,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
   getitimer(ITIMER_REAL, &it);
   exec_ms = (u64) timeout - (it.it_value.tv_sec * 1000 +
-                             it.it_value.tv_usec / 1000);
+                             it.it_value.tv_usec / 1000); // 计算执行时间
 
   it.it_value.tv_sec = 0;
   it.it_value.tv_usec = 0;
@@ -2474,7 +2525,7 @@ static u8 run_target(char** argv, u32 timeout) {
   MEM_BARRIER();
 
   tb4 = *(u32*)trace_bits;
-
+  // 分别执行64和32位下的classify_counts，设置trace_bits所在的mem
 #ifdef WORD_SIZE_64
   classify_counts((u64*)trace_bits);
 #else
@@ -2583,7 +2634,30 @@ static void show_stats(void);
 /* Calibrate a new test case. This is done when processing the input directory
    to warn about flaky or otherwise problematic test cases early on; and when
    new paths are discovered to detect variable behavior and so on. */
+/*
+  该函数同样为AFL的一个关键函数，用于新测试用例的校准，在处理输入目录时执行，
+  以便在早期就发现有问题的测试用例，并且在发现新路径时，评估新发现的测试用例的是否可变。
+  该函数在 perform_dry_run，save_if_interesting，fuzz_one，pilot_fuzzing，core_fuzzing函数中均有调用。
+  该函数主要用途是初始化并启动fork server，多次运行测试用例，并用 update_bitmap_score 进行初始的byte排序。
+*/
 
+/*
+  1. 进行参数设置，包括当前阶段 stage_cur，阶段名称 stage_name，新比特 `new_bit 等初始化;
+  2. 参数 from_queue，判断case是否在队列中，且是否处于resuming session， 以此设置时间延迟。testcase参数 q->cal_failed 加1， 是否校准失败参数加1；
+  3. 判断是否已经启动fork server ，调用函数 init_fork server() ；
+  4. 拷贝 trace_bits 到 first_trace ，调用 get_cur_time_us() 获取开始时间 start_us；
+  5. 进入loop循环，该loop循环多次执行testcase，循环次数为8次或者3次；
+  6. 调用 write_to_testcase 将修改后的数据写入文件进行测试。如果 use_stdin 被清除，取消旧文件链接并创建一个新文件。否则，缩短prog_in_fd ；
+  7. 调用 run_target 通知fork server可以开始fork并fuzz；
+  8. 调用 hash32 校验此次运行的 trace_bits，检查是否出现新的情况；
+  9. 将本次运行的出现 trace_bits 哈希和本次 testcase的 q->exec_cksum对比。如果发现不同，则调用 has_new_bits函数和总表virgin_bits 对比；
+  10. 判断 q->exec_cksum 是否为0，不为0说明不是第一次执行。后面运行如果和前面第一次 trace_bits 结果不同，则需要多运行几次；
+  11. loop循环结束；
+  12. 收集一些关于测试用例性能的统计数据。比如执行时间延迟，校准错误，bitmap大小等等；
+  13. 调用 update_bitmap_score() 函数对测试用例的每个byte进行排序，用一个 top_rate[] 维护最佳入口；
+  14. 如果没有从检测中得到 new_bit，则告诉父进程，这是一个无关紧要的问题，但是需要提醒用户。 
+  总结：calibratecase函数到此为止，该函数主要用途是init_fork server；将testcase运行多次；用update_bitmap_score进行初始的byte排序。
+*/
 static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
                          u32 handicap, u8 from_queue) {
 
@@ -2610,7 +2684,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   stage_name = "calibration"; // stage_name设置为"calibration"
   stage_max  = fast_cal ? 3 : CAL_CYCLES; // 根据判断fast_cal是否为1，来设置stage_max的值为3或者CAL_CYCLES（默认8）
-
+  // // 设置 stage_max，新测试用例的校准周期数
   /* Make sure the forkserver is up before we do anything, and let's not
      count its spin-up time toward binary calibration. */
 
@@ -2627,7 +2701,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   start_us = get_cur_time_us();
 
-  for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
+  for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {// 开始执行 calibration stage，总计执行 stage_max 轮
 
     u32 cksum;
     // 如果这个queue不是来自input文件夹，而是评估新case，且第一轮calibration stage执行结束时
@@ -2690,12 +2764,12 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   /* OK, let's collect some stats about the performance of this test case.
      This is used for fuzzing air time calculations in calculate_score(). */
 
-  q->exec_us     = (stop_us - start_us) / stage_max; //计算单词执行时间的平均值赋值给q->exec_us
-  q->bitmap_size = count_bytes(trace_bits); //最后一次执行所覆盖到的路径数赋值给q->bitmap_size
+  q->exec_us     = (stop_us - start_us) / stage_max; // 单次执行时间的平均值
+  q->bitmap_size = count_bytes(trace_bits); // 最后一次执行所覆盖的路径数
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
-  total_bitmap_size += q->bitmap_size; //加上这个queue所覆盖到的路径树
+  total_bitmap_size += q->bitmap_size; //加上这个queue所覆盖到的路径数
   total_bitmap_entries++;
 
   update_bitmap_score(q);
@@ -2725,11 +2799,10 @@ abort_calibration:
     }
 
   }
-
+  //恢复之前的stage
   stage_name = old_sn;
   stage_cur  = old_sc;
-  stage_max  = old_sm; //恢复之前的stage
-
+  stage_max  = old_sm;
   if (!first_run) show_stats(); //如果不是第一次运行这个queue，展示状态
 
   return fault;
@@ -2755,7 +2828,12 @@ static void check_map_coverage(void) {
 
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
-
+/*
+  进入 while 循环，遍历 input 队列，从队列中取出 q->fname，读取文件内容到分配的内存中，然后关闭文件；
+  调用 calibrate_case 函数校准该测试用例；
+  根据校准的返回值 res ，判断错误类型；
+  打印错误信息，退出。
+*/
 static void perform_dry_run(char** argv) {
 
   struct queue_entry* q = queue;
@@ -5030,6 +5108,28 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
     DICTIONARY STUFF阶段
     RANDOM HAVOC阶段
 */
+
+/*
+  函数主要是从queue中取出entry进行fuzz，成功返回0，跳过或退出的话返回1。
+
+  整体过程：
+
+  1. 根据是否有 pending_favored 和queue_cur的情况，按照概率进行跳过；有pending_favored, 
+    对于已经fuzz过的或者non-favored的有99%的概率跳过；无pending_favored，95%跳过fuzzed&non-favored，75%跳过not fuzzed&non-favored，不跳过favored；
+  2. 假如当前项有校准错误，并且校准错误次数小于3次，那么就用calibrate_case进行测试；
+  3. 如果测试用例没有修剪过，那么调用函数trim_case对测试用例进行修剪；
+  4. 修剪完毕之后，使用calculate_score对每个测试用例进行打分；
+  5. 如果该queue已经完成deterministic阶段，则直接跳到havoc阶段；
+  6. deterministic阶段变异4个stage，变异过程中会多次调用函数common_fuzz_stuff函数，保存interesting 的种子：
+  7. bitflip，按位翻转，1变为0，0变为1
+  8. arithmetic，整数加/减算术运算
+  9. interest，把一些特殊内容替换到原文件中
+  10. dictionary，把自动生成或用户提供的token替换/插入到原文件中
+  11. havoc，中文意思是“大破坏”，此阶段会对原文件进行大量变异。
+  12. splice，中文意思是“绞接”，此阶段会将两个文件拼接起来得到一个新的文件。
+  13. 该轮完成。
+  这里涉及到AFL中的变异策略
+*/
 static u8 fuzz_one(char** argv) {
 
   s32 len, fd, temp_len, i, j;
@@ -6750,6 +6850,12 @@ abandon_entry:
   依次执行一遍，如果发现了新的path，就保存到自己的queue文件夹里，
   将最后一个sync的case id写入到.synced/其他fuzzer文件名文件里
 */
+/*
+  该函数的主要作用是进行queue同步，先读取有哪些fuzzer文件夹，
+  然后读取其他fuzzer文件夹下的queue文件夹中的测试用例，然后以此执行。
+  如果在执行过程中，发现这些测试用例可以触发新路径，则将测试用例保存到自己的queue文件夹中，
+  并将最后一个同步的测试用例的id写入到 .synced/fuzzer文件夹名 文件中，避免重复运行。
+*/
 static void sync_fuzzers(char** argv) {
   //读取sync文件夹写的queue文件，保存到自己的queue中
   DIR* sd;
@@ -7849,7 +7955,11 @@ static void save_cmdline(u32 argc, char** argv) {
 /* Main entry point */
 
 int main(int argc, char** argv) {
-
+  /*
+    初始配置：进行fuzz环境配置相关工作
+    fuzz执行：fuzz的主循环过程
+    变异策略：测试用例的变异过程和方式
+  */
   s32 opt;
   u64 prev_queued = 0;
   u32 sync_interval_cnt = 0, seek_to;
@@ -8135,11 +8245,11 @@ int main(int argc, char** argv) {
 
   start_time = get_cur_time(); // 以毫秒为单位获取unix时间
 
-  if (qemu_mode)
+  if (qemu_mode) //检查是否处于qemu_mode状态
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
     use_argv = argv + optind;
-
+  // 该函数是AFL中的一个关键函数，它会执行 input 文件夹下的预先准备的所有测试用例，生成初始化的 queue 和 bitmap，只对初始输入执行一次。
   perform_dry_run(use_argv); // 执行所有的测试用例，以检查是否按预期工作
 
   cull_queue(); // 精简队列
@@ -8160,7 +8270,18 @@ int main(int argc, char** argv) {
     start_time += 4000;
     if (stop_soon) goto stop_fuzzing;
   }
+  /*
+    该处该过程整体如下：
 
+    1. 判断 queue_cur 是否为空，如果是则表示已经完成队列遍历，初始化相关参数，重新开始一轮；
+    2. 找到queue入口的case，直接跳到该case；
+    3. 如果一整个队列循环都没新发现，尝试重组策略；
+    4. 调用关键函数 fuzz_one() 对该case进行fuzz；
+    5. 上面的变异完成后，AFL会对文件队列的下一个进行变异处理。当队列中的全部文件都变异测试后，
+        就完成了一个”cycle”，这个就是AFL状态栏右上角的”cycles done”。而正如cycle的意思所说，
+        整个队列又会从第一个文件开始，再次进行变异，不过与第一次变异不同的是，
+        这一次就不需要再进行“deterministic fuzzing”了。如果用户不停止AFL，seed文件将会一遍遍的变异下去。
+*/
   while (1) {
 
     u8 skipped_fuzz;
@@ -8174,13 +8295,13 @@ int main(int argc, char** argv) {
       cur_skipped_paths = 0; // 废弃输入至0
       queue_cur         = queue; // queue_cur指向queue头，开始新一轮fuzz
       // 如果是resume fuzz，检查seek_to是否为空，如果不为空就从seek_to指定的queue项开始执行（seek_to由find_start_position函数返回）
-      while (seek_to) {
+      while (seek_to) { // 如果seek_to不为空
         current_entry++;
         seek_to--;
-        queue_cur = queue_cur->next;
+        queue_cur = queue_cur->next; // 从seek_to指定的queue项开始执行
       }
 
-      show_stats();
+      show_stats(); // 刷新展示界面
 
       if (not_on_tty) {
         ACTF("Entering queue cycle %llu.", queue_cycle); // 输出当前是第几次循环
@@ -8190,10 +8311,11 @@ int main(int argc, char** argv) {
       /* If we had a full queue cycle with no new finds, try
          recombination strategies next. */
       // 如果经历了一个完整的扫描周期后都没有新的路径发现，那么尝试调整策略
+      // 如果一轮执行后queue中的case数与执行前一样，表示没有发现新的case
       if (queued_paths == prev_queued) {
         // 如果在执行一次完整的扫描周期后新发现的路径数与执行之前的一样，这代表没有发现任何新的路径
         if (use_splicing) cycles_wo_finds++; else use_splicing = 1; //设置cycles_wo_finds计数器+1，记录本次扫描无新路径
-
+        // 是否使用splice进行case变异
       } else cycles_wo_finds = 0;
 
       prev_queued = queued_paths; // 更新“上一次”路径数
@@ -8206,7 +8328,7 @@ int main(int argc, char** argv) {
     skipped_fuzz = fuzz_one(use_argv); // 调用fuzz_one，对queue_cur进行一次测试，如果不执行返回1，否则返回0
 
     if (!stop_soon && sync_id && !skipped_fuzz) {
-      
+        // 如果skipped_fuzz为0且存在sync_id，表示要进行一次sync
       if (!(sync_interval_cnt++ % SYNC_INTERVAL)) // sync_interval_cnt计数器+1，对SYNC_INTERVAL(默认为5)求余，即如果是5的倍数
         sync_fuzzers(use_argv); // 调用sync_fuzzers，同步其他fuzzer
 

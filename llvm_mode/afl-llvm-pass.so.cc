@@ -28,7 +28,7 @@
    It tells the compiler to add code roughly equivalent to the bits discussed
    in ../afl-as.h.
 */
-
+// afl-llvm-pass.so.cc 文件实现了 LLVM-mode 下的一个插桩 LLVM Pass。
 #define AFL_LLVM_PASS
 
 #include "../config.h"
@@ -72,7 +72,7 @@ char AFLCoverage::ID = 0;
 
 bool AFLCoverage::runOnModule(Module &M) {
 
-  LLVMContext &C = M.getContext();
+  LLVMContext &C = M.getContext(); // 获取进程上下文
 
   IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
   IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
@@ -121,29 +121,29 @@ bool AFLCoverage::runOnModule(Module &M) {
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
 
-      if (AFL_R(100) >= inst_ratio) continue;
+      if (AFL_R(100) >= inst_ratio) continue; // 如果大于插桩密度，进行随机插桩
 
       /* Make up cur_loc */
-
+      // 随机创建当前BB的ID，然后插入load指令，获取前一个BB的ID；
       unsigned int cur_loc = AFL_R(MAP_SIZE);
 
-      ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
+      ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc); // 随机创建当前基本块ID
 
       /* Load prev_loc */
 
       LoadInst *PrevLoc = IRB.CreateLoad(AFLPrevLoc);
       PrevLoc->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      Value *PrevLocCasted = IRB.CreateZExt(PrevLoc, IRB.getInt32Ty());
+      Value *PrevLocCasted = IRB.CreateZExt(PrevLoc, IRB.getInt32Ty()); // 获取上一个基本块的随机ID
 
       /* Load SHM pointer */
-
+      // 插入load指令，获取共享内存的地址，并调用 CreateGEP 函数获取共享内存中指定index的地址；
       LoadInst *MapPtr = IRB.CreateLoad(AFLMapPtr);
       MapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       Value *MapPtrIdx =
           IRB.CreateGEP(MapPtr, IRB.CreateXor(PrevLocCasted, CurLoc));
 
       /* Update bitmap */
-
+      // 插入load指令，获取对应index地址的值；插入add指令加一，然后创建store指令写入新值，并更新共享内存
       LoadInst *Counter = IRB.CreateLoad(MapPtrIdx);
       Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       Value *Incr = IRB.CreateAdd(Counter, ConstantInt::get(Int8Ty, 1));
@@ -151,11 +151,11 @@ bool AFLCoverage::runOnModule(Module &M) {
           ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
       /* Set prev_loc to cur_loc >> 1 */
-
+      // 右移 cur_loc ，插入store指令，更新 __afl_prev_loc;
       StoreInst *Store =
           IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
       Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-
+      // 最后对插桩计数加1；
       inst_blocks++;
 
     }

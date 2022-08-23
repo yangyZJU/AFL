@@ -111,7 +111,12 @@
    oddball register it may touch.
 
  */
-
+/*
+  保存 rdx、 rcx 、rax 寄存器
+  将 rcx 的值设置为 fprintf() 函数将要打印的变量内容
+  调用 __afl_maybe_log 函数
+  恢复寄存器
+*/
 static const u8* trampoline_fmt_32 =
 
   "\n"

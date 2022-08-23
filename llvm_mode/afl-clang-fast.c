@@ -345,7 +345,7 @@ int main(int argc, char** argv) {
 
 
 #ifndef __ANDROID__
-  find_obj(argv[0]);
+  find_obj(argv[0]); // 查找运行时library
 #endif
 
   edit_params(argc, argv);
